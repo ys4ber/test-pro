@@ -1,0 +1,114 @@
+---
+# Backup operations for WordPress application
+- name: "💾 WordPress Application Backup Tasks"
+  block:
+    - name: Check if application exists
+      stat:
+        path: "{{ app_deployment_path }}"
+      register: app_exists
+
+    - name: Create timestamped backup directory
+      file:
+        path: "{{ backup_base_path }}/{{ ansible_date_time.epoch }}"
+        state: directory
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_user }}"
+        mode: '0755'
+      register: backup_dir
+
+    - name: Backup application files
+      block:
+        - name: Copy application directory
+          copy:
+            src: "{{ app_deployment_path }}/"
+            dest: "{{ backup_dir.path }}/app_files/"
+            owner: "{{ deploy_user }}"
+            group: "{{ deploy_user }}"
+            mode: preserve
+            remote_src: yes
+          when: app_exists.stat.exists
+
+        - name: Backup WordPress content
+          archive:
+            path: "{{ app_deployment_path }}/wp-content"
+            dest: "{{ backup_dir.path }}/wp-content-{{ ansible_date_time.epoch }}.tar.gz"
+            owner: "{{ deploy_user }}"
+            group: "{{ deploy_user }}"
+          when: app_exists.stat.exists
+
+    - name: Backup database
+      block:
+        - name: Check if database container exists
+          shell: |
+            cd {{ app_deployment_path }}
+            docker compose ps database --format json
+          register: db_container_check
+          failed_when: false
+          become_user: "{{ deploy_user }}"
+          when: app_exists.stat.exists
+
+        - name: Export database
+          shell: |
+            cd {{ app_deployment_path }}
+            docker compose exec -T database mysqldump \
+              --user=root \
+              --password="${MYSQL_ROOT_PASSWORD}" \
+              --single-transaction \
+              --routines \
+              --triggers \
+              "${MYSQL_DATABASE}" > {{ backup_dir.path }}/database-{{ ansible_date_time.epoch }}.sql
+          environment:
+            MYSQL_ROOT_PASSWORD: "{{ mysql_root_password | default('') }}"
+            MYSQL_DATABASE: "{{ mysql_database | default(app_name + '_' + environment + '_db') }}"
+          become_user: "{{ deploy_user }}"
+          when: 
+            - app_exists.stat.exists
+            - db_container_check.rc == 0
+            - "'database' in db_container_check.stdout"
+
+    - name: Create backup manifest
+      copy:
+        content: |
+          Backup Information for {{ app_name }} ({{ environment }})
+          Created: {{ ansible_date_time.iso8601 }}
+          Backup ID: {{ ansible_date_time.epoch }}
+          
+          Contents:
+          - Application files: app_files/
+          - WordPress content: wp-content-{{ ansible_date_time.epoch }}.tar.gz
+          - Database export: database-{{ ansible_date_time.epoch }}.sql
+          
+          Environment Details:
+          - App Name: {{ app_name }}
+          - Environment: {{ environment }}
+          - Server: {{ inventory_hostname }}
+          - Deploy User: {{ deploy_user }}
+          - Backup Path: {{ backup_dir.path }}
+          
+          Restore Instructions:
+          1. Stop current containers: docker compose down
+          2. Restore files: cp -r app_files/* {{ app_deployment_path }}/
+          3. Import database: docker compose exec -T database mysql -u root -p < database-{{ ansible_date_time.epoch }}.sql
+          4. Start containers: docker compose up -d
+        dest: "{{ backup_dir.path }}/BACKUP_INFO.txt"
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_user }}"
+        mode: '0644'
+
+    - name: Cleanup old backups
+      shell: |
+        find {{ backup_base_path }} -maxdepth 1 -type d -name "[0-9]*" -mtime +{{ backup_retention_days | default(30) }} -exec rm -rf {} \;
+      become_user: "{{ deploy_user }}"
+
+    - name: Display backup information
+      debug:
+        msg:
+          - "✅ Backup completed successfully"
+          - "📁 Backup location: {{ backup_dir.path }}"
+          - "🕐 Backup ID: {{ ansible_date_time.epoch }}"
+          - "📋 Backup contents documented in BACKUP_INFO.txt"
+
+  rescue:
+    - name: Handle backup failure
+      debug:
+        msg: "❌ Backup operation failed, but deployment will continue"

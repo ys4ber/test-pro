@@ -1,0 +1,280 @@
+---
+# WordPress Application Deployment Playbook for haha
+# This playbook handles deployment, backup, maintenance, and cleanup operations
+
+- name: Deploy WordPress Application - haha
+  hosts: wordpress_servers
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    # Default variables (can be overridden via --extra-vars)
+    app_name: "{{ app_name | default('haha') }}"
+    environment: "{{ environment | default('test') }}"
+    deploy_user: "{{ ansible_user | default('liadwordpress') }}"
+    
+    # Deployment paths
+    app_base_path: "/home/{{ deploy_user }}"
+    app_deployment_path: "{{ app_base_path }}/{{ app_name }}-{{ environment }}"
+    backup_base_path: "{{ app_base_path }}/backups/{{ app_name }}"
+    
+    # Operation modes
+    is_backup_only: "{{ backup_only | default(false) }}"
+    is_cleanup_environment: "{{ cleanup_environment | default(false) }}"
+    is_maintenance_mode: "{{ maintenance_mode | default(false) }}"
+    is_full_backup: "{{ full_backup | default(false) }}"
+
+  pre_tasks:
+    # =============================================================================
+    # ENVIRONMENT VALIDATION
+    # =============================================================================
+    - name: "🔍 Validate deployment parameters"
+      block:
+        - name: Display deployment information
+          debug:
+            msg:
+              - "🚀 Starting deployment for: {{ app_name }}"
+              - "🌍 Environment: {{ environment }}"
+              - "👤 Deploy user: {{ deploy_user }}"
+              - "📁 Deployment path: {{ app_deployment_path }}"
+              - "💾 Backup only: {{ is_backup_only }}"
+              - "🧹 Cleanup mode: {{ is_cleanup_environment }}"
+              - "🔧 Maintenance mode: {{ is_maintenance_mode }}"
+
+        - name: Validate required variables
+          assert:
+            that:
+              - app_name is defined and app_name != ""
+              - environment is defined and environment != ""
+              - deploy_user is defined and deploy_user != ""
+            fail_msg: "❌ Required variables missing or invalid"
+            success_msg: "✅ All required variables validated"
+
+    # =============================================================================
+    # SYSTEM PREPARATION
+    # =============================================================================
+    - name: "🔧 Prepare system environment"
+      block:
+        - name: Display system information
+          debug:
+            msg:
+              - "🖥️ Operating System: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+              - "🏗️ OS Family: {{ ansible_os_family }}"
+              - "💻 Architecture: {{ ansible_architecture }}"
+
+        - name: Update system package cache (Debian/Ubuntu)
+          apt:
+            update_cache: yes
+            cache_valid_time: 3600
+          when: ansible_os_family == "Debian"
+
+        - name: Update system package cache (RedHat/CentOS)
+          yum:
+            name: "*"
+            state: latest
+            update_cache: yes
+          when: ansible_os_family == "RedHat"
+
+        - name: Install EPEL repository (CentOS/RHEL)
+          yum:
+            name: epel-release
+            state: present
+          when: ansible_os_family == "RedHat"
+          ignore_errors: yes
+
+        - name: Install Docker repository (CentOS/RHEL)
+          yum_repository:
+            name: docker-ce
+            description: Docker CE Repository
+            baseurl: https://download.docker.com/linux/centos/7/x86_64/stable/
+            gpgcheck: yes
+            gpgkey: https://download.docker.com/linux/centos/gpg
+            enabled: yes
+          when: ansible_os_family == "RedHat"
+          ignore_errors: yes
+
+        - name: Install required system packages (Debian/Ubuntu)
+          apt:
+            name:
+              - docker.io
+              - docker-compose-plugin
+              - curl
+              - wget
+              - unzip
+              - rsync
+              - cron
+            state: present
+          when: ansible_os_family == "Debian"
+
+        - name: Install required system packages (RedHat/CentOS/AlmaLinux)
+          yum:
+            name:
+              - docker-ce
+              - docker-ce-cli
+              - containerd.io
+              - curl
+              - wget
+              - unzip
+              - rsync
+              - cronie
+              - python3-pip
+            state: present
+          when: ansible_os_family == "RedHat"
+          ignore_errors: yes
+
+        - name: Install docker-compose via pip (CentOS)
+          pip:
+            name: docker-compose
+            state: present
+            executable: pip3
+          when: ansible_os_family == "RedHat"
+          ignore_errors: yes
+
+        - name: Fallback - Install basic Docker (CentOS)
+          yum:
+            name:
+              - docker
+              - curl
+              - wget
+              - unzip
+              - rsync
+              - cronie
+            state: present
+          when: ansible_os_family == "RedHat"
+          ignore_errors: yes
+
+        - name: Install required system packages (Generic)
+          package:
+            name:
+              - curl
+              - wget
+              - unzip
+              - rsync
+            state: present
+          when: ansible_os_family not in ["Debian", "RedHat"]
+
+        - name: Ensure Docker service is running (after package installation)
+          systemd:
+            name: docker
+            state: started
+            enabled: yes
+          when: ansible_os_family in ["Debian", "RedHat"]
+          ignore_errors: yes
+
+        - name: Add deploy user to docker group
+          user:
+            name: "{{ deploy_user }}"
+            groups: docker
+            append: yes
+          when: ansible_os_family in ["Debian", "RedHat"]
+          ignore_errors: yes
+
+    # =============================================================================
+    # DIRECTORY STRUCTURE
+    # =============================================================================
+    - name: "📁 Create directory structure"
+      block:
+        - name: Create application deployment directory
+          file:
+            path: "{{ app_deployment_path }}"
+            state: directory
+            owner: "{{ deploy_user }}"
+            group: "{{ deploy_user }}"
+            mode: '0755'
+
+        - name: Create backup directories
+          file:
+            path: "{{ item }}"
+            state: directory
+            owner: "{{ deploy_user }}"
+            group: "{{ deploy_user }}"
+            mode: '0755'
+          loop:
+            - "{{ backup_base_path }}"
+            - "{{ backup_base_path }}/{{ ansible_date_time.date }}"
+
+        - name: Create application subdirectories
+          file:
+            path: "{{ app_deployment_path }}/{{ item }}"
+            state: directory
+            owner: "{{ deploy_user }}"
+            group: "{{ deploy_user }}"
+            mode: '0755'
+          loop:
+            - wp-content/themes
+            - wp-content/uploads
+            - wp-content/plugins
+            - php-conf
+            - logs
+            - scripts
+          when: not is_cleanup_environment
+
+  # =============================================================================
+  # CONDITIONAL TASK EXECUTION
+  # =============================================================================
+  tasks:
+    # BACKUP OPERATIONS
+    - name: "💾 Execute backup operations"
+      include_tasks: tasks/backup.yml
+      when: is_backup_only or is_full_backup or (environment == 'prod' and not is_cleanup_environment)
+
+    # MAINTENANCE MODE
+    - name: "⏸️ Enable maintenance mode"
+      include_tasks: tasks/maintenance.yml
+      vars:
+        maintenance_state: true
+      when: is_maintenance_mode and not is_cleanup_environment
+
+    # CLEANUP OPERATIONS
+    - name: "🧹 Execute cleanup operations"
+      include_tasks: tasks/cleanup.yml
+      when: is_cleanup_environment
+
+  # =============================================================================
+  # DEPLOYMENT ROLES
+  # =============================================================================
+  roles:
+    - role: wordpress
+      when: not is_cleanup_environment and not is_backup_only
+      tags: ['wordpress', 'deploy']
+      
+    - role: nginx
+      when: not is_cleanup_environment and not is_backup_only
+      tags: ['nginx', 'deploy']
+      
+    - role: mysql
+      when: not is_cleanup_environment and not is_backup_only
+      tags: ['mysql', 'deploy']
+
+  # =============================================================================
+  # POST-DEPLOYMENT TASKS
+  # =============================================================================
+  post_tasks:
+    # DISABLE MAINTENANCE MODE
+    - name: "▶️ Disable maintenance mode"
+      include_tasks: tasks/maintenance.yml
+      vars:
+        maintenance_state: false
+      when: is_maintenance_mode and not is_cleanup_environment
+
+    # HEALTH CHECKS
+    - name: "🏥 Execute health checks"
+      include_tasks: tasks/health_check.yml
+      when: not is_cleanup_environment and not is_backup_only
+
+    # DEPLOYMENT LOGGING
+    - name: "📊 Log deployment completion"
+      include_tasks: tasks/logging.yml
+      when: not is_cleanup_environment and not is_backup_only
+
+# =============================================================================
+# ADDITIONAL TASK FILES
+# =============================================================================
+
+# Note: Create these task files in the same directory as deploy.yml
+
+# tasks/backup.yml - Backup operations
+# tasks/cleanup.yml - Environment cleanup
+# tasks/maintenance.yml - Maintenance mode toggle
+# tasks/health_check.yml - Health validation
+# tasks/logging.yml - Deployment logging

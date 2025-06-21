@@ -1,0 +1,232 @@
+---
+# WordPress Application Deployment Playbook for haha - STREAMLINED VERSION
+# Optimized for CentOS 9 - Fast and Essential Only
+
+- name: Deploy WordPress Application - haha (Fast Version)
+  hosts: wordpress_servers
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    # Essential variables only
+    app_name: "{{ app_name | default('haha') }}"
+    environment: "{{ environment | default('test') }}"
+    deploy_user: "{{ ansible_user | default('liadwordpress') }}"
+    app_deployment_path: "/home/{{ deploy_user }}/{{ app_name }}-{{ environment }}"
+    
+    # Simple operation flags
+    is_backup_only: "{{ backup_only | default(false) }}"
+    is_cleanup_environment: "{{ cleanup_environment | default(false) }}"
+    is_maintenance_mode: "{{ maintenance_mode | default(false) | bool }}"
+
+  tasks:
+    # =============================================================================
+    # BACKUP MODE (skip deployment if backup_only is true)
+    # =============================================================================
+    - name: "💾 Backup mode - just create backup"
+      block:
+        - name: "💾 Create backup directory"
+          file:
+            path: "/home/{{ deploy_user }}/backups/{{ app_name }}"
+            state: directory
+            owner: "{{ deploy_user }}"
+            group: "{{ deploy_user }}"
+            mode: '0755'
+          
+        - name: "💾 Quick backup"
+          shell: |
+            cd {{ app_deployment_path }}
+            if [ -d "wp-content" ]; then
+              tar -czf "/home/{{ deploy_user }}/backups/{{ app_name }}/wp-content-$(date +%Y%m%d-%H%M%S).tar.gz" wp-content/
+            fi
+          ignore_errors: yes
+          
+        - name: "✅ Backup completed - stopping here"
+          debug:
+            msg: "Backup completed for {{ app_name }}-{{ environment }}"
+            
+        - meta: end_play
+      when: is_backup_only
+
+    # =============================================================================
+    # MAINTENANCE MODE
+    # =============================================================================
+    - name: "⏸️ Handle maintenance mode"
+      block:
+        - name: "⏸️ Enable maintenance mode"
+          copy:
+            content: "<?php $upgrading = time(); ?>"
+            dest: "{{ app_deployment_path }}/wp-content/.maintenance"
+            owner: "{{ deploy_user }}"
+            group: "{{ deploy_user }}"
+            mode: '0644'
+          when: is_maintenance_mode
+          ignore_errors: yes
+          
+        - name: "▶️ Disable maintenance mode"
+          file:
+            path: "{{ app_deployment_path }}/wp-content/.maintenance"
+            state: absent
+          when: not is_maintenance_mode
+          ignore_errors: yes
+          
+        - name: "✅ Maintenance mode handled - stopping here"
+          debug:
+            msg: "Maintenance mode set to {{ is_maintenance_mode }} for {{ app_name }}-{{ environment }}"
+            
+        - meta: end_play
+      when: maintenance_mode is defined
+
+    # =============================================================================
+    # QUICK VALIDATION
+    # =============================================================================
+    - name: "🔍 Quick validation"
+      debug:
+        msg:
+          - "🚀 Deploying: {{ app_name }}"
+          - "🌍 Environment: {{ environment }}"
+          - "📁 Path: {{ app_deployment_path }}"
+
+    # =============================================================================
+    # ESSENTIAL PACKAGES ONLY
+    # =============================================================================
+    - name: "📦 Install essential packages (CentOS optimized)"
+      block:
+        - name: Install basic Docker and tools
+          yum:
+            name:
+              - docker
+              - curl
+              - unzip
+              - python3-pip
+            state: present
+          ignore_errors: yes
+
+        - name: Install docker-compose via pip
+          pip:
+            name: docker-compose
+            executable: pip3
+          ignore_errors: yes
+
+        - name: Start Docker service
+          systemd:
+            name: docker
+            state: started
+            enabled: yes
+          ignore_errors: yes
+
+        - name: Add user to docker group
+          user:
+            name: "{{ deploy_user }}"
+            groups: docker
+            append: yes
+          ignore_errors: yes
+
+    # =============================================================================
+    # DEPLOYMENT DIRECTORY
+    # =============================================================================
+    - name: "📁 Create deployment directory"
+      file:
+        path: "{{ app_deployment_path }}"
+        state: directory
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_user }}"
+        mode: '0755'
+
+    # =============================================================================
+    # WORDPRESS DEPLOYMENT (SIMPLIFIED)
+    # =============================================================================
+    - name: "🚀 Deploy WordPress"
+      block:
+        - name: Stop existing containers
+          community.docker.docker_compose:
+            project_src: "{{ app_deployment_path }}"
+            state: absent
+          ignore_errors: yes
+          become_user: "{{ deploy_user }}"
+
+        - name: Generate secure passwords
+          set_fact:
+            mysql_root_password: "{{ 99999999 | random | to_uuid }}"
+            mysql_password: "{{ 99999999 | random | to_uuid }}"
+            wp_admin_password: "{{ 99999999 | random | to_uuid }}"
+
+        - name: Create docker-compose.yml
+          copy:
+            dest: "{{ app_deployment_path }}/docker-compose.yml"
+            content: |
+              version: '3.8'
+              services:
+                wordpress:
+                  image: wordpress:latest
+                  container_name: "{{ app_name }}_{{ environment }}_wordpress"
+                  ports:
+                    - "{{ wordpress_port | default('4000') }}:80"
+                  environment:
+                    WORDPRESS_DB_HOST: mysql
+                    WORDPRESS_DB_USER: wordpress
+                    WORDPRESS_DB_PASSWORD: "{{ mysql_password }}"
+                    WORDPRESS_DB_NAME: wordpress
+                  volumes:
+                    - wordpress_data:/var/www/html
+                  depends_on:
+                    - mysql
+                  restart: unless-stopped
+
+                mysql:
+                  image: mysql:8.0
+                  container_name: "{{ app_name }}_{{ environment }}_mysql"
+                  environment:
+                    MYSQL_ROOT_PASSWORD: "{{ mysql_root_password }}"
+                    MYSQL_DATABASE: wordpress
+                    MYSQL_USER: wordpress
+                    MYSQL_PASSWORD: "{{ mysql_password }}"
+                  volumes:
+                    - mysql_data:/var/lib/mysql
+                  restart: unless-stopped
+
+                phpmyadmin:
+                  image: phpmyadmin/phpmyadmin
+                  container_name: "{{ app_name }}_{{ environment }}_pma"
+                  ports:
+                    - "{{ pma_port | default('4001') }}:80"
+                  environment:
+                    PMA_HOST: mysql
+                    PMA_USER: root
+                    PMA_PASSWORD: "{{ mysql_root_password }}"
+                  depends_on:
+                    - mysql
+                  restart: unless-stopped
+
+              volumes:
+                wordpress_data:
+                mysql_data:
+            owner: "{{ deploy_user }}"
+            group: "{{ deploy_user }}"
+            mode: '0644'
+
+        - name: Start WordPress containers
+          community.docker.docker_compose:
+            project_src: "{{ app_deployment_path }}"
+            state: present
+          become_user: "{{ deploy_user }}"
+
+        - name: Wait for WordPress to be ready
+          wait_for:
+            port: "{{ wordpress_port | default('4000') }}"
+            host: "{{ server_ip | default('192.99.35.79') }}"
+            delay: 30
+            timeout: 120
+
+    # =============================================================================
+    # FINAL STATUS
+    # =============================================================================
+    - name: "🎉 Deployment completed"
+      debug:
+        msg:
+          - "✅ WordPress deployed successfully!"
+          - "🌐 WordPress URL: http://{{ server_ip | default('192.99.35.79') }}:{{ wordpress_port | default('4000') }}"
+          - "🔐 phpMyAdmin URL: http://{{ server_ip | default('192.99.35.79') }}:{{ pma_port | default('4001') }}"
+          - "🔑 MySQL Root Password: {{ mysql_root_password }}"
+          - "🔑 WordPress DB Password: {{ mysql_password }}"
+          - "🔑 WordPress Admin Password: {{ wp_admin_password }}"

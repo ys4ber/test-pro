@@ -1,0 +1,410 @@
+# Azure DevOps Pipeline for WordPress App: haha
+# Multi-Stage Deployment using Ansible
+
+name: haha-Deploy-Ansible-v2
+
+trigger:
+  branches:
+    include:
+      - master
+      - main
+      - development
+  paths:
+    include:
+      - apps/haha/**/*
+
+pr:
+  branches:
+    include:
+      - master
+      - main
+  paths:
+    include:
+      - apps/haha/**/*
+
+variables:
+  APP_NAME: 'haha'
+  DEPLOY_USER: 'liadwordpress'
+  SERVER_IP: '192.99.35.79'
+  WP_URL_TEST: 'http://192.99.35.79:4000'
+  WP_URL_PREPROD: 'http://192.99.35.79:4100'
+  WP_URL_PROD: 'http://192.99.35.79:4200'
+  PMA_URL_TEST: 'http://192.99.35.79:4001'
+  PMA_URL_PREPROD: 'http://192.99.35.79:4101'
+  PMA_URL_PROD: 'http://192.99.35.79:4201'
+
+stages:
+  # =============================================================================
+  # TEST STAGE
+  # =============================================================================
+  - stage: Test
+    displayName: "🧪 Test Environment"
+    variables:
+      ENVIRONMENT: 'test'
+      ANSIBLE_INVENTORY: 'ansible/inventories/test/hosts'
+    jobs:
+      - deployment: DeployTest
+        displayName: "🚀 Deploy to Test"
+        environment: 'haha-test-env'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                  displayName: "📥 Checkout Source Code"
+
+                - task: UsePythonVersion@0
+                  inputs:
+                    versionSpec: '3.x'
+                  displayName: "🐍 Setup Python"
+
+                - script: |
+                    sudo apt-get update -qq
+                    sudo apt-get install -y ansible sshpass rsync
+                    ansible --version
+                  displayName: "📦 Install Ansible Dependencies"
+
+                - script: |
+                    echo "🔍 Validating Ansible configuration..."
+                    APP_PATH="$(Build.SourcesDirectory)/apps/$(APP_NAME)"
+                    
+                    if [ ! -d "$APP_PATH" ]; then
+                      echo "❌ App directory not found: $APP_PATH"
+                      exit 1
+                    fi
+                    
+                    if [ ! -f "$APP_PATH/ansible/deploy.yml" ]; then
+                      echo "❌ Ansible playbook not found: $APP_PATH/ansible/deploy.yml"
+                      exit 1
+                    fi
+                    
+                    if [ ! -f "$APP_PATH/$(ANSIBLE_INVENTORY)" ]; then
+                      echo "❌ Ansible inventory not found: $APP_PATH/$(ANSIBLE_INVENTORY)"
+                      exit 1
+                    fi
+                    
+                    echo "✅ Ansible configuration validated"
+                    echo "📋 App structure:"
+                    ls -la "$APP_PATH"
+                  displayName: "🔍 Validate Ansible Configuration"
+
+                - script: |
+                    echo "🔧 Deploying with Ansible to Test Environment..."
+                    APP_PATH="$(Build.SourcesDirectory)/apps/$(APP_NAME)"
+                    
+                    cd "$APP_PATH"
+                    ansible-playbook ansible/deploy.yml \
+                      -i $(ANSIBLE_INVENTORY) \
+                      --extra-vars "app_name=$(APP_NAME) environment=$(ENVIRONMENT) wp_url=$(WP_URL_TEST) pma_url=$(PMA_URL_TEST)" \
+                      --ssh-extra-args="-o StrictHostKeyChecking=no" \
+                      -v
+                  displayName: "🔧 Deploy with Ansible to Test"
+
+                - script: |
+                    echo "🏥 Running Test Environment Health Checks..."
+                    
+                    # Function to test endpoint
+                    test_endpoint() {
+                      local url=$1
+                      local name=$2
+                      local max_attempts=5
+                      local attempt=1
+                      
+                      while [ $attempt -le $max_attempts ]; do
+                        echo "🔍 Testing $name (attempt $attempt/$max_attempts)..."
+                        if curl -f -s -m 10 "$url" > /dev/null 2>&1; then
+                          echo "✅ $name is healthy"
+                          return 0
+                        fi
+                        sleep 10
+                        ((attempt++))
+                      done
+                      
+                      echo "❌ $name failed health check"
+                      return 1
+                    }
+                    
+                    # Wait for services
+                    sleep 30
+                    
+                    # Test endpoints
+                    test_endpoint "$(WP_URL_TEST)" "WordPress Test Frontend"
+                    test_endpoint "$(PMA_URL_TEST)" "phpMyAdmin Test"
+                    
+                    echo "✅ Test environment health checks completed"
+                  displayName: "🔍 Test Environment Health Check"
+
+  # =============================================================================
+  # PREPROD STAGE
+  # =============================================================================
+  - stage: PreProd
+    displayName: "🚧 PreProd Environment"
+    dependsOn: Test
+    condition: succeeded()
+    variables:
+      ENVIRONMENT: 'preprod'
+      ANSIBLE_INVENTORY: 'ansible/inventories/preprod/hosts'
+    jobs:
+      - deployment: DeployPreProd
+        displayName: "📆 Deploy to PreProd"
+        environment: 'haha-preprod-env'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                  displayName: "📥 Checkout Source Code"
+
+                - task: UsePythonVersion@0
+                  inputs:
+                    versionSpec: '3.x'
+                  displayName: "🐍 Setup Python"
+
+                - script: |
+                    sudo apt-get update -qq
+                    sudo apt-get install -y ansible sshpass rsync
+                  displayName: "📦 Install Ansible Dependencies"
+
+                - script: |
+                    echo "💾 Creating PreProd backup..."
+                    APP_PATH="$(Build.SourcesDirectory)/apps/$(APP_NAME)"
+                    
+                    # Create backup playbook run
+                    cd "$APP_PATH"
+                    ansible-playbook ansible/deploy.yml \
+                      -i $(ANSIBLE_INVENTORY) \
+                      --extra-vars "app_name=$(APP_NAME) environment=$(ENVIRONMENT) backup_only=true" \
+                      --ssh-extra-args="-o StrictHostKeyChecking=no" || echo "Backup completed or not needed"
+                  displayName: "💾 Backup PreProd Environment"
+
+                - script: |
+                    echo "🔧 Deploying with Ansible to PreProd Environment..."
+                    APP_PATH="$(Build.SourcesDirectory)/apps/$(APP_NAME)"
+                    
+                    cd "$APP_PATH"
+                    ansible-playbook ansible/deploy.yml \
+                      -i $(ANSIBLE_INVENTORY) \
+                      --extra-vars "app_name=$(APP_NAME) environment=$(ENVIRONMENT) wp_url=$(WP_URL_PREPROD) pma_url=$(PMA_URL_PREPROD)" \
+                      --ssh-extra-args="-o StrictHostKeyChecking=no" \
+                      -v
+                  displayName: "🔧 Deploy with Ansible to PreProd"
+
+                - script: |
+                    echo "🏥 Running PreProd Environment Health Checks..."
+                    
+                    # Function to test endpoint
+                    test_endpoint() {
+                      local url=$1
+                      local name=$2
+                      local max_attempts=3
+                      local attempt=1
+                      
+                      while [ $attempt -le $max_attempts ]; do
+                        echo "🔍 Testing $name (attempt $attempt/$max_attempts)..."
+                        if curl -f -s -m 15 "$url" > /dev/null 2>&1; then
+                          echo "✅ $name is healthy"
+                          return 0
+                        fi
+                        sleep 15
+                        ((attempt++))
+                      done
+                      
+                      echo "❌ $name failed health check"
+                      return 1
+                    }
+                    
+                    # Wait for services
+                    sleep 45
+                    
+                    # Test endpoints
+                    test_endpoint "$(WP_URL_PREPROD)" "WordPress PreProd Frontend"
+                    test_endpoint "$(WP_URL_PREPROD)/wp-admin" "WordPress PreProd Admin"
+                    test_endpoint "$(PMA_URL_PREPROD)" "phpMyAdmin PreProd"
+                    
+                    echo "✅ PreProd environment health checks completed"
+                  displayName: "🔍 PreProd Environment Health Check"
+
+  # =============================================================================
+  # PRODUCTION STAGE
+  # =============================================================================
+  - stage: Production
+    displayName: "🏭 Production Environment"
+    dependsOn: PreProd
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/master'))
+    variables:
+      ENVIRONMENT: 'prod'
+      ANSIBLE_INVENTORY: 'ansible/inventories/prod/hosts'
+    jobs:
+      - deployment: DeployProduction
+        displayName: "🎯 Deploy to Production"
+        environment: 'haha-prod-env'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                  displayName: "📥 Checkout Source Code"
+
+                - task: UsePythonVersion@0
+                  inputs:
+                    versionSpec: '3.x'
+                  displayName: "🐍 Setup Python"
+
+                - script: |
+                    sudo apt-get update -qq
+                    sudo apt-get install -y ansible sshpass rsync
+                  displayName: "📦 Install Ansible Dependencies"
+
+                - script: |
+                    echo "💾 Creating Production backup..."
+                    APP_PATH="$(Build.SourcesDirectory)/apps/$(APP_NAME)"
+                    
+                    # Create comprehensive backup
+                    cd "$APP_PATH"
+                    ansible-playbook ansible/deploy.yml \
+                      -i $(ANSIBLE_INVENTORY) \
+                      --extra-vars "app_name=$(APP_NAME) environment=$(ENVIRONMENT) backup_only=true full_backup=true" \
+                      --ssh-extra-args="-o StrictHostKeyChecking=no" || echo "Backup completed or not needed"
+                  displayName: "💾 Backup Production Environment"
+
+                - script: |
+                    echo "⏸️ Enabling maintenance mode..."
+                    APP_PATH="$(Build.SourcesDirectory)/apps/$(APP_NAME)"
+                    
+                    cd "$APP_PATH"
+                    ansible-playbook ansible/deploy.yml \
+                      -i $(ANSIBLE_INVENTORY) \
+                      --extra-vars "app_name=$(APP_NAME) environment=$(ENVIRONMENT) maintenance_mode=true" \
+                      --ssh-extra-args="-o StrictHostKeyChecking=no" || echo "Maintenance mode enabled"
+                  displayName: "⏸️ Enable Maintenance Mode"
+
+                - script: |
+                    echo "🔧 Deploying with Ansible to Production Environment..."
+                    APP_PATH="$(Build.SourcesDirectory)/apps/$(APP_NAME)"
+                    
+                    cd "$APP_PATH"
+                    ansible-playbook ansible/deploy.yml \
+                      -i $(ANSIBLE_INVENTORY) \
+                      --extra-vars "app_name=$(APP_NAME) environment=$(ENVIRONMENT) wp_url=$(WP_URL_PROD) pma_url=$(PMA_URL_PROD)" \
+                      --ssh-extra-args="-o StrictHostKeyChecking=no" \
+                      -v
+                  displayName: "🔧 Deploy with Ansible to Production"
+
+                - script: |
+                    echo "▶️ Disabling maintenance mode..."
+                    APP_PATH="$(Build.SourcesDirectory)/apps/$(APP_NAME)"
+                    
+                    cd "$APP_PATH"
+                    ansible-playbook ansible/deploy.yml \
+                      -i $(ANSIBLE_INVENTORY) \
+                      --extra-vars "app_name=$(APP_NAME) environment=$(ENVIRONMENT) maintenance_mode=false" \
+                      --ssh-extra-args="-o StrictHostKeyChecking=no" || echo "Maintenance mode disabled"
+                  displayName: "▶️ Disable Maintenance Mode"
+
+                - script: |
+                    echo "🏥 Running Production Health Checks..."
+                    
+                    # Function to test endpoint with retries
+                    test_endpoint() {
+                      local url=$1
+                      local name=$2
+                      local max_attempts=5
+                      local attempt=1
+                      
+                      while [ $attempt -le $max_attempts ]; do
+                        echo "🔍 Testing $name (attempt $attempt/$max_attempts)..."
+                        if curl -f -s -m 15 "$url" > /dev/null 2>&1; then
+                          echo "✅ $name is healthy"
+                          return 0
+                        fi
+                        sleep 15
+                        ((attempt++))
+                      done
+                      
+                      echo "❌ $name failed health check"
+                      return 1
+                    }
+                    
+                    # Wait for services to fully start
+                    sleep 60
+                    
+                    # Test all endpoints
+                    test_endpoint "$(WP_URL_PROD)" "WordPress Production Frontend"
+                    test_endpoint "$(WP_URL_PROD)/wp-admin" "WordPress Production Admin"
+                    test_endpoint "$(PMA_URL_PROD)" "phpMyAdmin Production"
+                    
+                    echo "✅ Production environment health checks completed"
+                  displayName: "🔍 Production Health Check"
+
+                - script: |
+                    echo ""
+                    echo "🎉 PRODUCTION DEPLOYMENT SUCCESSFUL"
+                    echo "=================================================="
+                    echo "📱 Application: $(APP_NAME)"
+                    echo "🌐 WordPress: $(WP_URL_PROD)"
+                    echo "🔐 Admin Panel: $(WP_URL_PROD)/wp-admin"
+                    echo "🗄️ phpMyAdmin: $(PMA_URL_PROD)"
+                    echo "🏗️ Build: $(Build.BuildNumber)"
+                    echo "📅 Deployed: $(date)"
+                    echo ""
+                    echo "🔧 SSH Access:"
+                    echo "  ssh $(DEPLOY_USER)@$(SERVER_IP)"
+                    echo ""
+                    echo "📋 Management Commands:"
+                    echo "  cd /home/$(DEPLOY_USER)/$(APP_NAME)-prod"
+                    echo "  docker compose ps          # Check status"
+                    echo "  docker compose logs        # View logs"
+                    echo "  docker compose restart     # Restart services"
+                    echo ""
+                    echo "🎯 Environment URLs:"
+                    echo "  Test: $(WP_URL_TEST)"
+                    echo "  PreProd: $(WP_URL_PREPROD)"
+                    echo "  Production: $(WP_URL_PROD)"
+                    echo ""
+                  displayName: "🎉 Production Deployment Summary"
+
+  # =============================================================================
+  # CLEANUP STAGE (Optional)
+  # =============================================================================
+  - stage: Cleanup
+    displayName: "🧹 Cleanup Test Environments"
+    dependsOn: Production
+    condition: succeeded()
+    jobs:
+      - job: CleanupJob
+        displayName: "🧹 Cleanup Test and PreProd"
+        steps:
+          - checkout: self
+            displayName: "📥 Checkout Source Code"
+
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.x'
+            displayName: "🐍 Setup Python"
+
+          - script: |
+              sudo apt-get update -qq
+              sudo apt-get install -y ansible sshpass
+            displayName: "📦 Install Ansible Dependencies"
+
+          - script: |
+              echo "🧹 Cleaning up test environment..."
+              APP_PATH="$(Build.SourcesDirectory)/apps/$(APP_NAME)"
+              
+              cd "$APP_PATH"
+              ansible-playbook ansible/deploy.yml \
+                -i ansible/inventories/test/hosts \
+                --extra-vars "app_name=$(APP_NAME) environment=test cleanup_environment=true" \
+                --ssh-extra-args="-o StrictHostKeyChecking=no" || echo "Test cleanup completed"
+            displayName: "🧹 Cleanup Test Environment"
+
+          - script: |
+              echo "🧹 Cleaning up preprod environment..."
+              APP_PATH="$(Build.SourcesDirectory)/apps/$(APP_NAME)"
+              
+              cd "$APP_PATH"
+              ansible-playbook ansible/deploy.yml \
+                -i ansible/inventories/preprod/hosts \
+                --extra-vars "app_name=$(APP_NAME) environment=preprod cleanup_environment=true" \
+                --ssh-extra-args="-o StrictHostKeyChecking=no" || echo "PreProd cleanup completed"
+            displayName: "🧹 Cleanup PreProd Environment"

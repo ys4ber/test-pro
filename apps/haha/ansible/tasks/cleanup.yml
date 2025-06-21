@@ -1,0 +1,99 @@
+---
+# Cleanup operations for WordPress application environment
+- name: "🧹 WordPress Application Cleanup Tasks"
+  block:
+    - name: Check if application deployment exists
+      stat:
+        path: "{{ app_deployment_path }}"
+      register: deployment_exists
+
+    - name: Stop and remove containers
+      block:
+        - name: Stop all containers
+          shell: |
+            cd {{ app_deployment_path }}
+            docker compose down --remove-orphans --volumes
+          become_user: "{{ deploy_user }}"
+          ignore_errors: yes
+
+        - name: Remove unused Docker images
+          shell: |
+            docker image prune -f
+          ignore_errors: yes
+
+        - name: Remove unused Docker volumes
+          shell: |
+            docker volume prune -f
+          ignore_errors: yes
+
+        - name: Remove unused Docker networks
+          shell: |
+            docker network prune -f
+          ignore_errors: yes
+
+      when: deployment_exists.stat.exists
+
+    - name: Clean application directories
+      block:
+        - name: Create final backup before cleanup
+          include_tasks: backup.yml
+          vars:
+            backup_reason: "pre_cleanup"
+          when: environment != 'test'
+
+        - name: Remove application deployment directory
+          file:
+            path: "{{ app_deployment_path }}"
+            state: absent
+
+        - name: Clean temporary files
+          shell: |
+            find /tmp -name "*{{ app_name }}*{{ environment }}*" -type f -mtime +1 -delete
+          ignore_errors: yes
+
+    - name: Clean Docker system resources
+      block:
+        - name: Remove dangling images
+          shell: |
+            docker image prune -f
+          ignore_errors: yes
+
+        - name: Clean build cache
+          shell: |
+            docker builder prune -f
+          ignore_errors: yes
+
+        - name: System-wide Docker cleanup
+          shell: |
+            docker system prune -f --volumes
+          ignore_errors: yes
+          when: environment == 'test'
+
+    - name: Clean application-specific Docker resources
+      block:
+        - name: Remove application-specific volumes
+          shell: |
+            docker volume ls -q | grep -E "{{ app_name }}_{{ environment }}" | xargs -r docker volume rm
+          ignore_errors: yes
+
+        - name: Remove application-specific networks
+          shell: |
+            docker network ls -q | grep -E "{{ app_name }}_{{ environment }}" | xargs -r docker network rm
+          ignore_errors: yes
+
+    - name: Display cleanup summary
+      debug:
+        msg:
+          - "✅ Cleanup completed for {{ app_name }} ({{ environment }})"
+          - "🗑️ Removed deployment directory: {{ app_deployment_path }}"
+          - "🐳 Cleaned Docker resources"
+          - "📦 Removed containers, volumes, and networks"
+          - "💾 Pre-cleanup backup created (if applicable)"
+
+  rescue:
+    - name: Handle cleanup failure
+      debug:
+        msg: 
+          - "⚠️ Some cleanup operations may have failed"
+          - "🔍 Check manually for any remaining resources"
+          - "🐳 Run: docker system prune -af --volumes (caution: removes all unused resources)"

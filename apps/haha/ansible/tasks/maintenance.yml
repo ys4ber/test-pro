@@ -1,0 +1,178 @@
+---
+# Health check operations for WordPress application
+- name: "🏥 WordPress Application Health Checks"
+  block:
+    - name: Wait for services to stabilize
+      pause:
+        seconds: 30
+        prompt: "⏳ Waiting for services to fully start..."
+
+    - name: Check container status
+      block:
+        - name: Get container status
+          shell: |
+            cd {{ app_deployment_path }}
+            docker compose ps --format json
+          register: container_status
+          become_user: "{{ deploy_user }}"
+
+        - name: Parse container information
+          set_fact:
+            containers_info: "{{ container_status.stdout | from_json if container_status.stdout else [] }}"
+
+        - name: Verify all containers are running
+          assert:
+            that:
+              - containers_info | length > 0
+              - containers_info | selectattr('State', 'equalto', 'running') | list | length == containers_info | length
+            fail_msg: "❌ Not all containers are running properly"
+            success_msg: "✅ All containers are running"
+
+        - name: Display container status
+          debug:
+            msg: "🐳 Container {{ item.Service }} is {{ item.State }} ({{ item.Status }})"
+          loop: "{{ containers_info }}"
+
+    - name: Test WordPress frontend
+      block:
+        - name: Check WordPress accessibility
+          uri:
+            url: "{{ wp_url | default('http://' + ansible_default_ipv4.address + ':' + (wordpress_port | default('80') | string)) }}"
+            method: GET
+            status_code: [200, 302, 301]
+            timeout: 30
+            follow_redirects: yes
+          register: wp_frontend_check
+          retries: 5
+          delay: 10
+
+        - name: Verify WordPress response
+          debug:
+            msg: "✅ WordPress frontend is accessible (HTTP {{ wp_frontend_check.status }})"
+
+    - name: Test WordPress admin panel
+      block:
+        - name: Check WordPress admin accessibility
+          uri:
+            url: "{{ wp_url | default('http://' + ansible_default_ipv4.address + ':' + (wordpress_port | default('80') | string)) }}/wp-admin"
+            method: GET
+            status_code: [200, 302, 301]
+            timeout: 30
+            follow_redirects: yes
+          register: wp_admin_check
+          retries: 3
+          delay: 10
+
+        - name: Verify WordPress admin response
+          debug:
+            msg: "✅ WordPress admin panel is accessible (HTTP {{ wp_admin_check.status }})"
+
+    - name: Test phpMyAdmin
+      block:
+        - name: Check phpMyAdmin accessibility
+          uri:
+            url: "{{ pma_url | default('http://' + ansible_default_ipv4.address + ':' + (phpmyadmin_port | default('8080') | string)) }}"
+            method: GET
+            status_code: [200, 302]
+            timeout: 30
+          register: pma_check
+          retries: 3
+          delay: 10
+
+        - name: Verify phpMyAdmin response
+          debug:
+            msg: "✅ phpMyAdmin is accessible (HTTP {{ pma_check.status }})"
+
+    - name: Test database connectivity
+      block:
+        - name: Check database connection
+          shell: |
+            cd {{ app_deployment_path }}
+            docker compose exec -T database mysql \
+              --user=root \
+              --password="${MYSQL_ROOT_PASSWORD}" \
+              --execute="SELECT 1 as connection_test;" \
+              "${MYSQL_DATABASE}"
+          environment:
+            MYSQL_ROOT_PASSWORD: "{{ mysql_root_password | default('') }}"
+            MYSQL_DATABASE: "{{ mysql_database | default(app_name + '_' + environment + '_db') }}"
+          register: db_connection_test
+          become_user: "{{ deploy_user }}"
+
+        - name: Verify database connectivity
+          debug:
+            msg: "✅ Database connection successful"
+          when: "'connection_test' in db_connection_test.stdout"
+
+    - name: Test WordPress CLI
+      block:
+        - name: Check WP-CLI functionality
+          shell: |
+            cd {{ app_deployment_path }}
+            docker compose exec -T wpcli wp core version --allow-root
+          register: wpcli_test
+          become_user: "{{ deploy_user }}"
+
+        - name: Verify WP-CLI response
+          debug:
+            msg: "✅ WP-CLI is functional (WordPress {{ wpcli_test.stdout.strip() }})"
+
+    - name: Resource usage check
+      block:
+        - name: Check Docker container resource usage
+          shell: |
+            docker stats --no-stream --format "table {{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}"
+          register: resource_usage
+
+        - name: Display resource usage
+          debug:
+            msg: 
+              - "💻 Container Resource Usage:"
+              - "{{ resource_usage.stdout }}"
+
+    - name: Performance test
+      block:
+        - name: Measure response time
+          uri:
+            url: "{{ wp_url | default('http://' + ansible_default_ipv4.address + ':' + (wordpress_port | default('80') | string)) }}"
+            method: GET
+            return_content: no
+          register: performance_test
+
+        - name: Display performance metrics
+          debug:
+            msg: "⚡ Response time: {{ performance_test.elapsed }}s"
+
+    - name: Health check summary
+      debug:
+        msg:
+          - "🎉 Health check completed successfully!"
+          - "✅ All services are operational"
+          - "🌐 WordPress: {{ wp_url | default('http://' + ansible_default_ipv4.address + ':' + (wordpress_port | default('80') | string)) }}"
+          - "🔐 Admin: {{ wp_url | default('http://' + ansible_default_ipv4.address + ':' + (wordpress_port | default('80') | string)) }}/wp-admin"
+          - "🗄️ phpMyAdmin: {{ pma_url | default('http://' + ansible_default_ipv4.address + ':' + (phpmyadmin_port | default('8080') | string)) }}"
+          - "⚡ Response time: {{ performance_test.elapsed }}s"
+
+  rescue:
+    - name: Health check failure handling
+      block:
+        - name: Collect diagnostic information
+          shell: |
+            cd {{ app_deployment_path }}
+            echo "=== Container Status ==="
+            docker compose ps
+            echo "=== Container Logs ==="
+            docker compose logs --tail=20
+          register: diagnostic_info
+          become_user: "{{ deploy_user }}"
+
+        - name: Display diagnostic information
+          debug:
+            msg:
+              - "❌ Health check failed"
+              - "🔍 Diagnostic information:"
+              - "{{ diagnostic_info.stdout }}"
+
+        - name: Fail deployment on health check failure
+          fail:
+            msg: "❌ Deployment failed health checks. Check the diagnostic information above."

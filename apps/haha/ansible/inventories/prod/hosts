@@ -1,0 +1,6 @@
+[wordpress_servers]
+192.99.35.79 ansible_user=liadwordpress ansible_port=2220 ansible_ssh_pass="{{ ssh_password | default('') }}" ansible_become_pass="{{ ssh_password | default('') }}"
+
+[wordpress_servers:vars]
+environment=prod
+app_name=haha

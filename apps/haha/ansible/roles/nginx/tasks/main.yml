@@ -1,0 +1,31 @@
+---
+- name: Create nginx configuration from template
+  template:
+    src: nginx.conf.j2
+    dest: "/home/{{ deploy_user }}/{{ app_name }}-{{ environment }}/nginx.conf"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: '0644'
+  notify: restart nginx container
+
+- name: Create PHP configuration directory
+  file:
+    path: "/home/{{ deploy_user }}/{{ app_name }}-{{ environment }}/php-conf"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: '0755'
+
+- name: Create PHP uploads configuration
+  copy:
+    content: |
+      upload_max_filesize = 2048M
+      post_max_size = 2048M
+      memory_limit = 2048M
+      max_execution_time = 2000
+      max_input_time = 2000
+      max_input_vars = 5000
+    dest: "/home/{{ deploy_user }}/{{ app_name }}-{{ environment }}/php-conf/uploads.ini"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: '0644'

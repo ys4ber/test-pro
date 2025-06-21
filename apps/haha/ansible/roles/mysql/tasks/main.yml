@@ -1,0 +1,31 @@
+---
+- name: Create MySQL data directory
+  file:
+    path: "/home/{{ deploy_user }}/{{ app_name }}-{{ environment }}/mysql-data"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: '0755'
+
+- name: Save database credentials for reference
+  copy:
+    content: |
+      # Database Credentials for {{ app_name }} ({{ environment }})
+      # Generated: {{ ansible_date_time.iso8601 }}
+      
+      MySQL Root Password: {{ mysql_root_password }}
+      MySQL Database: {{ mysql_database }}
+      MySQL User: {{ mysql_user }}
+      MySQL Password: {{ mysql_password }}
+      
+      Connection Details:
+      Host: {{ server_ip }}
+      Port: {{ mysql_port }}
+      
+      Access Commands:
+      docker compose exec -T database mysql -u root -p
+      docker compose exec -T database mysql -u {{ mysql_user }} -p {{ mysql_database }}
+    dest: "/home/{{ deploy_user }}/{{ app_name }}-{{ environment }}/database-credentials.txt"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: '0600'

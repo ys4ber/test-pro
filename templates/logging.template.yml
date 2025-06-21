@@ -1,0 +1,178 @@
+---
+# Deployment logging and reporting tasks
+- name: "📊 WordPress Application Deployment Logging"
+  block:
+    - name: Create deployment log entry
+      lineinfile:
+        path: "{{ app_deployment_path }}/deployment-history.log"
+        line: |
+          [{{ ansible_date_time.iso8601 }}] SUCCESS - {{ app_name }} ({{ environment }}) - Deployed by {{ ansible_user_id | default(deploy_user) }} from {{ ansible_hostname }}
+        create: yes
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_user }}"
+        mode: '0644'
+
+    - name: Collect deployment information
+      set_fact:
+        deployment_info:
+          app_name: "{{ app_name }}"
+          environment: "{{ environment }}"
+          deployment_time: "{{ ansible_date_time.iso8601 }}"
+          deployed_by: "{{ ansible_user_id | default(deploy_user) }}"
+          server: "{{ inventory_hostname }}"
+          ansible_version: "{{ ansible_version.full }}"
+          system_info:
+            os: "{{ ansible_distribution }} {{ ansible_distribution_version }}"
+            architecture: "{{ ansible_architecture }}"
+            total_memory: "{{ ansible_memtotal_mb }}MB"
+            cpu_cores: "{{ ansible_processor_vcpus }}"
+          network_info:
+            ip_address: "{{ ansible_default_ipv4.address }}"
+            hostname: "{{ ansible_hostname }}"
+          deployment_paths:
+            app_path: "{{ app_deployment_path }}"
+            backup_path: "{{ backup_base_path }}"
+          urls:
+            wordpress: "{{ wp_url | default('http://' + ansible_default_ipv4.address + ':' + (wordpress_port | default('80') | string)) }}"
+            admin: "{{ wp_url | default('http://' + ansible_default_ipv4.address + ':' + (wordpress_port | default('80') | string)) }}/wp-admin"
+            phpmyadmin: "{{ pma_url | default('http://' + ansible_default_ipv4.address + ':' + (phpmyadmin_port | default('8080') | string)) }}"
+
+    - name: Create detailed deployment report
+      copy:
+        content: |
+          # Deployment Report for {{ app_name }} ({{ environment }})
+          
+          ## Deployment Summary
+          - **Application**: {{ app_name }}
+          - **Environment**: {{ environment }}
+          - **Deployment Time**: {{ ansible_date_time.iso8601 }}
+          - **Deployed By**: {{ ansible_user_id | default(deploy_user) }}
+          - **Server**: {{ inventory_hostname }}
+          - **Ansible Version**: {{ ansible_version.full }}
+          
+          ## System Information
+          - **Operating System**: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          - **Architecture**: {{ ansible_architecture }}
+          - **Memory**: {{ ansible_memtotal_mb }}MB
+          - **CPU Cores**: {{ ansible_processor_vcpus }}
+          - **IP Address**: {{ ansible_default_ipv4.address }}
+          - **Hostname**: {{ ansible_hostname }}
+          
+          ## Application URLs
+          - **WordPress Frontend**: {{ deployment_info.urls.wordpress }}
+          - **WordPress Admin**: {{ deployment_info.urls.admin }}
+          - **phpMyAdmin**: {{ deployment_info.urls.phpmyadmin }}
+          
+          ## Deployment Paths
+          - **Application**: {{ app_deployment_path }}
+          - **Backups**: {{ backup_base_path }}
+          
+          ## Container Information
+          {% if containers_info is defined %}
+          {% for container in containers_info %}
+          - **{{ container.Service }}**: {{ container.State }} ({{ container.Status }})
+          {% endfor %}
+          {% endif %}
+          
+          ## Management Commands
+          ```bash
+          # SSH to server
+          ssh {{ deploy_user }}@{{ ansible_default_ipv4.address }}
+          
+          # Navigate to application
+          cd {{ app_deployment_path }}
+          
+          # Check container status
+          docker compose ps
+          
+          # View logs
+          docker compose logs -f
+          
+          # Restart services
+          docker compose restart
+          
+          # Access WordPress CLI
+          docker compose exec wpcli wp --info --allow-root
+          ```
+          
+          ## Troubleshooting
+          - **Log Location**: {{ app_deployment_path }}/logs/
+          - **Backup Location**: {{ backup_base_path }}/
+          - **Configuration**: {{ app_deployment_path }}/.env
+          
+          ---
+          Generated on {{ ansible_date_time.iso8601 }} by Ansible {{ ansible_version.full }}
+        dest: "{{ app_deployment_path }}/DEPLOYMENT_REPORT.md"
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_user }}"
+        mode: '0644'
+
+    - name: Create deployment status file
+      copy:
+        content: |
+          {
+            "deployment": {
+              "app_name": "{{ app_name }}",
+              "environment": "{{ environment }}",
+              "status": "success",
+              "timestamp": "{{ ansible_date_time.iso8601 }}",
+              "epoch": {{ ansible_date_time.epoch }},
+              "deployed_by": "{{ ansible_user_id | default(deploy_user) }}",
+              "server": "{{ inventory_hostname }}",
+              "ansible_version": "{{ ansible_version.full }}"
+            },
+            "system": {
+              "os": "{{ ansible_distribution }} {{ ansible_distribution_version }}",
+              "architecture": "{{ ansible_architecture }}",
+              "memory_mb": {{ ansible_memtotal_mb }},
+              "cpu_cores": {{ ansible_processor_vcpus }},
+              "ip_address": "{{ ansible_default_ipv4.address }}",
+              "hostname": "{{ ansible_hostname }}"
+            },
+            "application": {
+              "path": "{{ app_deployment_path }}",
+              "backup_path": "{{ backup_base_path }}",
+              "urls": {
+                "wordpress": "{{ deployment_info.urls.wordpress }}",
+                "admin": "{{ deployment_info.urls.admin }}",
+                "phpmyadmin": "{{ deployment_info.urls.phpmyadmin }}"
+              }
+            }
+          }
+        dest: "{{ app_deployment_path }}/deployment-status.json"
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_user }}"
+        mode: '0644'
+
+    - name: Send deployment notification (optional)
+      uri:
+        url: "{{ webhook_url }}"
+        method: POST
+        body_format: json
+        body:
+          text: |
+            ✅ Deployment Successful!
+            
+            **Application**: {{ app_name }} ({{ environment }})
+            **Time**: {{ ansible_date_time.iso8601 }}
+            **Server**: {{ inventory_hostname }}
+            **URLs**:
+            - WordPress: {{ deployment_info.urls.wordpress }}
+            - Admin: {{ deployment_info.urls.admin }}
+            - phpMyAdmin: {{ deployment_info.urls.phpmyadmin }}
+        status_code: [200, 201, 202]
+      when: webhook_url is defined
+      ignore_errors: yes
+
+    - name: Display deployment summary
+      debug:
+        msg:
+          - "🎉 Deployment logging completed!"
+          - "📄 Deployment report: {{ app_deployment_path }}/DEPLOYMENT_REPORT.md"
+          - "📊 Status file: {{ app_deployment_path }}/deployment-status.json"
+          - "📜 History log: {{ app_deployment_path }}/deployment-history.log"
+
+  rescue:
+    - name: Handle logging failure
+      debug:
+        msg: "⚠️ Deployment logging encountered issues, but deployment was successful"

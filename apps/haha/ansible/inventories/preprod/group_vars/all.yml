@@ -1,0 +1,39 @@
+---
+# preprod Environment Configuration for haha
+app_name: "haha"
+environment: "preprod"
+deploy_user: "liadwordpress"
+server_ip: "192.99.35.79"
+
+# Port Configuration
+wordpress_port: 4100
+phpmyadmin_port: 4101
+mysql_port: 4120
+
+# URLs
+wp_url: "http://192.99.35.79:4100"
+pma_url: "http://192.99.35.79:4101"
+
+# WordPress Configuration
+wordpress_title: "haha Preprod Site"
+wordpress_admin_user: "admin"
+wordpress_admin_email: "admin@haha-preprod.local"
+
+# Database Configuration
+mysql_database: "haha_preprod_db"
+mysql_user: "haha_preprod_user"
+
+# Docker Configuration
+docker_compose_file: "docker-compose.preprod.yml"
+container_prefix: "haha_preprod"
+
+# Backup Configuration
+backup_retention_days: 14
+backup_schedule: "0 3 * * *"
+
+# Environment Settings
+wp_debug: false
+wp_environment_type: staging
+
+# Security Settings (production only)
+

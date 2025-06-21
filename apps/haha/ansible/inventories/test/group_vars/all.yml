@@ -1,0 +1,39 @@
+---
+# test Environment Configuration for haha
+app_name: "haha"
+environment: "test"
+deploy_user: "liadwordpress"
+server_ip: "192.99.35.79"
+
+# Port Configuration
+wordpress_port: 4000
+phpmyadmin_port: 4001
+mysql_port: 4020
+
+# URLs
+wp_url: "http://192.99.35.79:4000"
+pma_url: "http://192.99.35.79:4001"
+
+# WordPress Configuration
+wordpress_title: "haha Test Site"
+wordpress_admin_user: "admin"
+wordpress_admin_email: "admin@haha-test.local"
+
+# Database Configuration
+mysql_database: "haha_test_db"
+mysql_user: "haha_test_user"
+
+# Docker Configuration
+docker_compose_file: "docker-compose.test.yml"
+container_prefix: "haha_test"
+
+# Backup Configuration
+backup_retention_days: 7
+backup_schedule: "0 2 * * *"
+
+# Environment Settings
+wp_debug: true
+wp_environment_type: development
+
+# Security Settings (production only)
+

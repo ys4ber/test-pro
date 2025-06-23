@@ -8,11 +8,16 @@
   gather_facts: yes
   
   vars:
-    # Essential variables only
+    # Essential variables only - using custom names to avoid Ansible reserved keywords
     app_name: "{{ app_name | default('haha') }}"
-    environment: "{{ environment | default('test') }}"
+    # Use custom variable name to avoid 'environment' reserved keyword
+    deploy_env: "{{ deploy_environment | default(environment | default('ysaber-env')) }}"
     deploy_user: "{{ ansible_user | default('liadwordpress') }}"
-    app_deployment_path: "/home/{{ deploy_user }}/{{ app_name }}-{{ environment }}"
+    
+    # Sanitize environment name for Docker (remove special characters, convert to safe format)
+    clean_environment: "{{ deploy_env | regex_replace('[^a-zA-Z0-9_-]', '') | regex_replace('-', '_') | default('ysaber_env') }}"
+    
+    app_deployment_path: "/home/{{ deploy_user }}/{{ app_name }}-{{ deploy_env }}"
     
     # Simple operation flags
     is_backup_only: "{{ backup_only | default(false) }}"
@@ -20,6 +25,33 @@
     is_maintenance_mode: "{{ maintenance_mode | default(false) | bool }}"
 
   tasks:
+    # =============================================================================
+    # ENVIRONMENT VALIDATION
+    # =============================================================================
+    - name: "🔍 Environment validation and setup"
+      block:
+        - name: Display environment info
+          debug:
+            msg:
+              - "🚀 App Name: {{ app_name }}"
+              - "🌍 Deploy Environment: {{ deploy_env }}"
+              - "🧹 Clean Environment: {{ clean_environment }}"
+              - "📁 Deployment Path: {{ app_deployment_path }}"
+              - "👤 Deploy User: {{ deploy_user }}"
+              - "🔍 Backup Only: {{ is_backup_only }}"
+              - "🔧 Maintenance Mode: {{ is_maintenance_mode }}"
+              - "📋 All Variables Debug:"
+              - "  - app_name: {{ app_name }}"
+              - "  - deploy_environment: {{ deploy_environment | default('NOT_SET') }}"
+              - "  - environment: {{ environment | default('NOT_SET') }}"
+
+        - name: Validate environment name
+          fail:
+            msg: "Environment name cannot be empty. deploy_env='{{ deploy_env }}', clean_environment='{{ clean_environment }}'"
+          when: 
+            - clean_environment == "" or clean_environment is not defined or clean_environment == "None"
+            - deploy_env == "" or deploy_env is not defined or deploy_env == "None"
+
     # =============================================================================
     # BACKUP MODE (skip deployment if backup_only is true)
     # =============================================================================
@@ -43,7 +75,7 @@
           
         - name: "✅ Backup completed - stopping here"
           debug:
-            msg: "Backup completed for {{ app_name }}-{{ environment }}"
+            msg: "Backup completed for {{ app_name }}-{{ deploy_env }}"
             
         - meta: end_play
       when: is_backup_only
@@ -72,20 +104,41 @@
           
         - name: "✅ Maintenance mode handled - stopping here"
           debug:
-            msg: "Maintenance mode set to {{ is_maintenance_mode }} for {{ app_name }}-{{ environment }}"
+            msg: "Maintenance mode set to {{ is_maintenance_mode }} for {{ app_name }}-{{ deploy_env }}"
             
         - meta: end_play
       when: maintenance_mode is defined
 
     # =============================================================================
-    # QUICK VALIDATION
+    # ANSIBLE COLLECTIONS
     # =============================================================================
-    - name: "🔍 Quick validation"
-      debug:
-        msg:
-          - "🚀 Deploying: {{ app_name }}"
-          - "🌍 Environment: {{ environment }}"
-          - "📁 Path: {{ app_deployment_path }}"
+    - name: "📦 Install required Ansible collections"
+      block:
+        - name: Install community.docker collection
+          shell: ansible-galaxy collection install community.docker --force
+          ignore_errors: yes
+          delegate_to: localhost
+          run_once: true
+
+    # =============================================================================
+    # DOCKER COMPOSE CLI VERIFICATION
+    # =============================================================================
+    - name: "🔍 Verify Docker Compose CLI"
+      block:
+        - name: Check Docker Compose v2 CLI availability
+          shell: docker compose version
+          register: docker_compose_version
+          ignore_errors: yes
+          
+        - name: Display Docker Compose version
+          debug:
+            msg: "Docker Compose CLI version: {{ docker_compose_version.stdout }}"
+          when: docker_compose_version.rc == 0
+            
+        - name: Fail if Docker Compose v2 CLI not available
+          fail:
+            msg: "Docker Compose v2 CLI is not available. Please install Docker Compose v2."
+          when: docker_compose_version.rc != 0
 
     # =============================================================================
     # ESSENTIAL PACKAGES ONLY
@@ -102,7 +155,7 @@
             state: present
           ignore_errors: yes
 
-        - name: Install docker-compose via pip
+        - name: Install docker-compose via pip (fallback)
           pip:
             name: docker-compose
             executable: pip3
@@ -122,6 +175,9 @@
             append: yes
           ignore_errors: yes
 
+        - name: Reset SSH connection to apply group changes
+          meta: reset_connection
+
     # =============================================================================
     # DEPLOYMENT DIRECTORY
     # =============================================================================
@@ -134,89 +190,177 @@
         mode: '0755'
 
     # =============================================================================
-    # WORDPRESS DEPLOYMENT (SIMPLIFIED)
+    # COPY PROJECT FILES FROM PIPELINE AGENT
     # =============================================================================
-    - name: "🚀 Deploy WordPress"
+    - name: "� Copy application files from pipeline"
       block:
-        - name: Stop existing containers
-          community.docker.docker_compose:
+        - name: Stop existing containers first
+          community.docker.docker_compose_v2:
             project_src: "{{ app_deployment_path }}"
             state: absent
           ignore_errors: yes
           become_user: "{{ deploy_user }}"
 
-        - name: Generate secure passwords
-          set_fact:
-            mysql_root_password: "{{ 99999999 | random | to_uuid }}"
-            mysql_password: "{{ 99999999 | random | to_uuid }}"
-            wp_admin_password: "{{ 99999999 | random | to_uuid }}"
+        - name: Copy entire app directory from pipeline agent
+          synchronize:
+            src: "{{ playbook_dir }}/../"
+            dest: "{{ app_deployment_path }}/"
+            delete: no
+            recursive: yes
+            links: yes
+            perms: yes
+            times: yes
+            checksum: yes
+            rsync_opts:
+              - "--exclude=.git"
+              - "--exclude=logs/"
+              - "--exclude=*.log"
+              - "--exclude=ansible"
+          delegate_to: localhost
+          become: no
 
-        - name: Create docker-compose.yml
-          copy:
-            dest: "{{ app_deployment_path }}/docker-compose.yml"
-            content: |
-              version: '3.8'
-              services:
-                wordpress:
-                  image: wordpress:latest
-                  container_name: "{{ app_name }}_{{ environment }}_wordpress"
-                  ports:
-                    - "{{ wordpress_port | default('4000') }}:80"
-                  environment:
-                    WORDPRESS_DB_HOST: mysql
-                    WORDPRESS_DB_USER: wordpress
-                    WORDPRESS_DB_PASSWORD: "{{ mysql_password }}"
-                    WORDPRESS_DB_NAME: wordpress
-                  volumes:
-                    - wordpress_data:/var/www/html
-                  depends_on:
-                    - mysql
-                  restart: unless-stopped
-
-                mysql:
-                  image: mysql:8.0
-                  container_name: "{{ app_name }}_{{ environment }}_mysql"
-                  environment:
-                    MYSQL_ROOT_PASSWORD: "{{ mysql_root_password }}"
-                    MYSQL_DATABASE: wordpress
-                    MYSQL_USER: wordpress
-                    MYSQL_PASSWORD: "{{ mysql_password }}"
-                  volumes:
-                    - mysql_data:/var/lib/mysql
-                  restart: unless-stopped
-
-                phpmyadmin:
-                  image: phpmyadmin/phpmyadmin
-                  container_name: "{{ app_name }}_{{ environment }}_pma"
-                  ports:
-                    - "{{ pma_port | default('4001') }}:80"
-                  environment:
-                    PMA_HOST: mysql
-                    PMA_USER: root
-                    PMA_PASSWORD: "{{ mysql_root_password }}"
-                  depends_on:
-                    - mysql
-                  restart: unless-stopped
-
-              volumes:
-                wordpress_data:
-                mysql_data:
+        - name: Set proper ownership for all files
+          file:
+            path: "{{ app_deployment_path }}"
             owner: "{{ deploy_user }}"
             group: "{{ deploy_user }}"
-            mode: '0644'
+            recurse: yes
+
+        - name: Generate secure passwords
+          set_fact:
+            mysql_root_password: "{{ lookup('password', '/tmp/mysql_root_pass chars=ascii_letters,digits length=16') }}"
+            mysql_password: "{{ lookup('password', '/tmp/mysql_user_pass chars=ascii_letters,digits length=16') }}"
+            wp_admin_password: "{{ lookup('password', '/tmp/wp_admin_pass chars=ascii_letters,digits length=16') }}"
+
+        # - name: Create .env file with environment-specific configuration
+        #   copy:
+        #     dest: "{{ app_deployment_path }}/.env"
+        #     content: |
+        #       # Environment Configuration for {{ app_name }} - {{ deploy_env }}
+        #       # Generated by Ansible on {{ ansible_date_time.iso8601 }}
+              
+        #       # Application Settings
+        #       APP_NAME={{ app_name }}
+        #       ENVIRONMENT={{ deploy_env }}
+              
+        #       # Database Configuration
+        #       MYSQL_ROOT_PASSWORD={{ mysql_root_password }}
+        #       MYSQL_DATABASE={{ app_name }}_{{ clean_environment }}_db
+        #       MYSQL_USER={{ app_name }}_{{ clean_environment }}_user
+        #       MYSQL_PASSWORD={{ mysql_password }}
+              
+        #       # WordPress Configuration
+        #       WORDPRESS_DB_HOST=database:3306
+        #       WORDPRESS_DB_NAME={{ app_name }}_{{ clean_environment }}_db
+        #       WORDPRESS_DB_USER={{ app_name }}_{{ clean_environment }}_user
+        #       WORDPRESS_DB_PASSWORD={{ mysql_password }}
+              
+        #       # WordPress Admin
+        #       WORDPRESS_ADMIN_USER=admin
+        #       WORDPRESS_ADMIN_PASSWORD={{ wp_admin_password }}
+        #       WORDPRESS_ADMIN_EMAIL=admin@{{ app_name }}-{{ deploy_env }}.local
+              
+        #       # URLs
+        #       WP_URL=http://{{ ansible_default_ipv4.address }}:{{ wordpress_port | default('4000') }}
+        #       PMA_URL=http://{{ ansible_default_ipv4.address }}:{{ phpmyadmin_port | default('4001') }}
+        #     owner: "{{ deploy_user }}"
+        #     group: "{{ deploy_user }}"
+        #     mode: '0600'  # Secure permissions for .env file
+
+        - name: Update docker-compose.yml with environment-specific ports
+          replace:
+            path: "{{ app_deployment_path }}/docker-compose.yml"
+            regexp: 'haha_'
+            replace: "{{ app_name }}_{{ clean_environment }}_"
+          
+        - name: Update docker-compose.yml database port
+          replace:
+            path: "{{ app_deployment_path }}/docker-compose.yml"
+            regexp: '"4020:3306"'
+            replace: '"{{ mysql_port | default("4020") }}:3306"'
+            
+        - name: Update docker-compose.yml WordPress port  
+          replace:
+            path: "{{ app_deployment_path }}/docker-compose.yml"
+            regexp: '"4000:80"'
+            replace: '"{{ wordpress_port | default("4000") }}:80"'
+            
+        - name: Update docker-compose.yml phpMyAdmin port
+          replace:
+            path: "{{ app_deployment_path }}/docker-compose.yml"
+            regexp: '"4001:80"'
+            replace: '"{{ phpmyadmin_port | default("4001") }}:80"'
+
+        - name: Create credentials file
+          copy:
+            dest: "{{ app_deployment_path }}/CREDENTIALS.txt"
+            content: |
+              # Generated Credentials for {{ app_name }} ({{ deploy_env }})
+              # Generated on: {{ ansible_date_time.iso8601 }}
+              # Save this file securely!
+
+              App Name: {{ app_name }}
+              Environment: {{ deploy_env }}
+              Clean Environment: {{ clean_environment }}
+              Server IP: {{ ansible_default_ipv4.address }}
+              WordPress URL: http://{{ ansible_default_ipv4.address }}:{{ wordpress_port | default('4000') }}
+              phpMyAdmin URL: http://{{ ansible_default_ipv4.address }}:{{ phpmyadmin_port | default('4001') }}
+
+              MySQL Root Password: {{ mysql_root_password }}
+              MySQL User Password: {{ mysql_password }}
+              WordPress Admin Password: {{ wp_admin_password }}
+
+              WordPress Admin Login:
+              - Username: admin
+              - Password: {{ wp_admin_password }}
+              - Email: admin@{{ app_name }}.local
+
+              Database Info:
+              - Database: wordpress
+              - Username: wordpress
+              - Password: {{ mysql_password }}
+
+              Container Names:
+              - WordPress: {{ app_name }}_{{ clean_environment }}_wordpress
+              - MySQL: {{ app_name }}_{{ clean_environment }}_mysql
+              - phpMyAdmin: {{ app_name }}_{{ clean_environment }}_pma
+
+              Docker Management:
+              - Stop: docker compose down
+              - Start: docker compose up -d
+              - Logs: docker compose logs -f
+              - Status: docker compose ps
+            owner: "{{ deploy_user }}"
+            group: "{{ deploy_user }}"
+            mode: '0600'
 
         - name: Start WordPress containers
-          community.docker.docker_compose:
+          community.docker.docker_compose_v2:
             project_src: "{{ app_deployment_path }}"
             state: present
           become_user: "{{ deploy_user }}"
 
+        - name: Wait for MySQL to be ready
+          wait_for:
+            host: "{{ ansible_default_ipv4.address }}"
+            port: 3306
+            delay: 15
+            timeout: 120
+          ignore_errors: yes
+
         - name: Wait for WordPress to be ready
           wait_for:
             port: "{{ wordpress_port | default('4000') }}"
-            host: "{{ server_ip | default('192.99.35.79') }}"
+            host: "{{ ansible_default_ipv4.address }}"
             delay: 30
             timeout: 120
+
+        - name: Wait for phpMyAdmin to be ready
+          wait_for:
+            port: "{{ phpmyadmin_port | default('4001') }}"
+            host: "{{ ansible_default_ipv4.address }}"
+            delay: 10
+            timeout: 60
 
     # =============================================================================
     # FINAL STATUS
@@ -225,8 +369,10 @@
       debug:
         msg:
           - "✅ WordPress deployed successfully!"
-          - "🌐 WordPress URL: http://{{ server_ip | default('192.99.35.79') }}:{{ wordpress_port | default('4000') }}"
-          - "🔐 phpMyAdmin URL: http://{{ server_ip | default('192.99.35.79') }}:{{ pma_port | default('4001') }}"
-          - "🔑 MySQL Root Password: {{ mysql_root_password }}"
-          - "🔑 WordPress DB Password: {{ mysql_password }}"
-          - "🔑 WordPress Admin Password: {{ wp_admin_password }}"
+          - "🌐 WordPress URL: http://{{ ansible_default_ipv4.address }}:{{ wordpress_port | default('4000') }}"
+          - "🔐 phpMyAdmin URL: http://{{ ansible_default_ipv4.address }}:{{ phpmyadmin_port | default('4001') }}"
+          - "📁 Deployment path: {{ app_deployment_path }}"
+          - "🔑 Credentials saved to: {{ app_deployment_path }}/CREDENTIALS.txt"
+          - "🐳 Container names: {{ app_name }}_{{ clean_environment }}_[wordpress|mysql|pma]"
+          - "📊 Container status: docker compose ps"
+          - "📜 View logs: docker compose logs -f"

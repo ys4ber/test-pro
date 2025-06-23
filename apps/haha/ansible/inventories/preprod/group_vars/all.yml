@@ -15,7 +15,7 @@ wp_url: "http://192.99.35.79:4100"
 pma_url: "http://192.99.35.79:4101"
 
 # WordPress Configuration
-wordpress_title: "haha Preprod Site"
+wordpress_title: "haha PreProd Site"
 wordpress_admin_user: "admin"
 wordpress_admin_email: "admin@haha-preprod.local"
 
@@ -23,17 +23,20 @@ wordpress_admin_email: "admin@haha-preprod.local"
 mysql_database: "haha_preprod_db"
 mysql_user: "haha_preprod_user"
 
-# Docker Configuration
-docker_compose_file: "docker-compose.preprod.yml"
-container_prefix: "haha_preprod"
+# Application Settings
+app_environment: "preprod"
+debug_mode: false
+cache_enabled: true
 
 # Backup Configuration
+backup_enabled: true
 backup_retention_days: 14
-backup_schedule: "0 3 * * *"
 
-# Environment Settings
-wp_debug: false
-wp_environment_type: staging
+# Security Settings
+ssl_enabled: false
+security_keys_salt: "preprod-security-keys"
 
-# Security Settings (production only)
-
+# Performance Settings
+php_memory_limit: "256M"
+php_max_execution_time: 120
+max_upload_size: "64M"

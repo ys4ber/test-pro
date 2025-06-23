@@ -15,7 +15,7 @@ wp_url: "http://192.99.35.79:4200"
 pma_url: "http://192.99.35.79:4201"
 
 # WordPress Configuration
-wordpress_title: "haha Prod Site"
+wordpress_title: "haha Production Site"
 wordpress_admin_user: "admin"
 wordpress_admin_email: "admin@haha-prod.local"
 
@@ -23,23 +23,20 @@ wordpress_admin_email: "admin@haha-prod.local"
 mysql_database: "haha_prod_db"
 mysql_user: "haha_prod_user"
 
-# Docker Configuration
-docker_compose_file: "docker-compose.prod.yml"
-container_prefix: "haha_prod"
+# Application Settings
+app_environment: "prod"
+debug_mode: false
+cache_enabled: true
 
 # Backup Configuration
+backup_enabled: true
 backup_retention_days: 30
-14
-backup_schedule: "0 1 * * *
-0 3 * * *"
 
-# Environment Settings
-wp_debug: false
-wp_environment_type: production
-staging
-
-# Security Settings (production only)
+# Security Settings
 ssl_enabled: true
-fail2ban_enabled: true
-firewall_enabled: true
-automatic_updates: false
+security_keys_salt: "prod-security-keys"
+
+# Performance Settings
+php_memory_limit: "512M"
+php_max_execution_time: 300
+max_upload_size: "128M"

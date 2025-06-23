@@ -1,7 +1,0 @@
----
-- name: restart wordpress
-  community.docker.docker_compose_v2:
-    project_src: "/home/{{ deploy_user }}/{{ app_name }}-{{ environment }}"
-    state: present
-    restart: true
-  become_user: "{{ deploy_user }}"
